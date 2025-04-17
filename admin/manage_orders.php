@@ -41,7 +41,7 @@ if (isset($_POST['update_status'])) {
 // Ambil daftar pesanan
 $orders_query = "SELECT ot.*, p.nama AS nama_produk, td.jumlah, td.subtotal
                  FROM online_transactions ot
-                 JOIN transaction_details td ON ot.id = td.id_transaction
+                 JOIN offline_transaction_details td ON ot.id = td.id_transaction
                  JOIN produk p ON td.id_produk = p.id_produk
                  ORDER BY ot.tanggal DESC";
 $orders_result = $conn->query($orders_query);
@@ -52,7 +52,7 @@ if (isset($_GET['view'])) {
     $id_transaction = (int)$_GET['view'];
     $stmt = $conn->prepare("SELECT ot.*, p.nama AS nama_produk, td.jumlah, td.subtotal
                             FROM online_transactions ot
-                            JOIN transaction_details td ON ot.id = td.id_transaction
+                            JOIN offline_transaction_details td ON ot.id = td.id_transaction
                             JOIN produk p ON td.id_produk = p.id_produk
                             WHERE ot.id = ?");
     $stmt->bind_param("i", $id_transaction);

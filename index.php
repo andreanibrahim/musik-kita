@@ -14,6 +14,56 @@ function sanitizeInput($data) {
 // Ambil daftar produk
 $products_query = "SELECT * FROM produk ORDER BY created_at DESC";
 $products_result = $conn->query($products_query);
+
+// Ambil data untuk chart (hanya untuk admin)
+$chart_data = [];
+$sales_data = [];
+if (isset($_SESSION['role']) && $_SESSION['role'] === 'admin') {
+    // Query untuk mendapatkan jumlah produk per kategori
+    $chart_query = "SELECT kategori, COUNT(*) as jumlah FROM produk GROUP BY kategori";
+    $chart_result = $conn->query($chart_query);
+    
+    while ($row = $chart_result->fetch_assoc()) {
+        $chart_data[] = $row;
+    }
+    
+    // Query untuk mendapatkan data penjualan offline
+    $offline_query = "SELECT tanggal, SUM(total) as total_penjualan
+                      FROM offline_transactions 
+                      GROUP BY tanggal
+                      ORDER BY tanggal DESC LIMIT 7";
+    $offline_result = $conn->query($offline_query);
+    
+    $offline_sales = [];
+    while ($row = $offline_result->fetch_assoc()) {
+        $offline_sales[$row['tanggal']] = $row['total_penjualan'];
+    }
+    // var_dump($offline_sales);exit;
+    // Query untuk mendapatkan data penjualan online
+    $online_query = "SELECT tanggal, SUM(total) as total_penjualan 
+                     FROM online_transactions 
+                     WHERE status = 'selesai' 
+                     GROUP BY tanggal
+                     ORDER BY tanggal DESC LIMIT 7";
+    $online_result = $conn->query($online_query);
+    
+    $online_sales = [];
+    while ($row = $online_result->fetch_assoc()) {
+        $online_sales[$row['tanggal']] = $row['total_penjualan'];
+    }
+    
+    // Gabungkan data penjualan
+    $all_dates = array_unique(array_merge(array_keys($offline_sales), array_keys($online_sales)));
+    sort($all_dates);
+    
+    foreach ($all_dates as $date) {
+        $sales_data[] = [
+            'tanggal' => $date,
+            'offline' => isset($offline_sales[$date]) ? $offline_sales[$date] : 0,
+            'online' => isset($online_sales[$date]) ? $online_sales[$date] : 0
+        ];
+    }
+}
 ?>
 
 <!DOCTYPE html>
@@ -24,6 +74,10 @@ $products_result = $conn->query($products_query);
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MusikKita - Beranda</title>
     <link rel="stylesheet" href="assets/css/styles.css">
+    <?php if (isset($_SESSION['role']) && $_SESSION['role'] === 'admin'): ?>
+    <!-- Chart.js untuk admin -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <?php endif; ?>
 </head>
 
 <body>
@@ -48,7 +102,17 @@ $products_result = $conn->query($products_query);
         </div>
     </header>
 
-    <main class="container">
+    <main class="">
+        <?php if (isset($_SESSION['role']) && $_SESSION['role'] === 'admin'): ?>
+        <!-- Dashboard chart untuk admin -->
+        <div class="admin-dashboard">
+            <h2>Dashboard Admin</h2>
+            <div class="chart-container" style="position: relative; height:400px; width:100%; margin-bottom: 30px;">
+                <canvas id="salesChart"></canvas>
+            </div>
+        </div>
+        <?php endif; ?>
+
         <h2>Daftar Alat Musik</h2>
 
         <div class="product-grid">
@@ -80,6 +144,93 @@ $products_result = $conn->query($products_query);
             <p>© 2025 MusikKita. All Rights Reserved.</p>
         </div>
     </footer>
+
+    <?php if (isset($_SESSION['role']) && $_SESSION['role'] === 'admin'): ?>
+    <!-- Script untuk chart admin -->
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Data dari PHP untuk chart produk
+        const chartData = <?php echo json_encode($chart_data); ?>;
+        
+        // Data dari PHP untuk chart penjualan
+        const salesData = <?php echo json_encode($sales_data); ?>;
+        
+        // Persiapkan data untuk chart penjualan
+        const salesLabels = salesData.map(item => item.tanggal);
+        const offlineData = salesData.map(item => item.offline);
+        const onlineData = salesData.map(item => item.online);
+        
+        // Buat chart penjualan
+        const salesCtx = document.getElementById('salesChart').getContext('2d');
+        const salesChart = new Chart(salesCtx, {
+            type: 'line',
+            data: {
+                labels: salesLabels,
+                datasets: [
+                    {
+                        label: 'Penjualan Offline',
+                        data: offlineData,
+                        backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                        borderColor: 'rgba(255, 99, 132, 1)',
+                        borderWidth: 1
+                    },
+                    {
+                        label: 'Penjualan Online',
+                        data: onlineData,
+                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        borderWidth: 1
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    title: {
+                        display: true,
+                        text: 'Perbandingan Penjualan Online dan Offline (7 Hari Terakhir)'
+                    },
+                    legend: {
+                        position: 'top',
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                let label = context.dataset.label || '';
+                                if (label) {
+                                    label += ': ';
+                                }
+                                if (context.parsed.y !== null) {
+                                    label += new Intl.NumberFormat('id-ID', { 
+                                        style: 'currency', 
+                                        currency: 'IDR',
+                                        minimumFractionDigits: 0
+                                    }).format(context.parsed.y);
+                                }
+                                return label;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            callback: function(value, index, values) {
+                                return new Intl.NumberFormat('id-ID', { 
+                                    style: 'currency', 
+                                    currency: 'IDR',
+                                    minimumFractionDigits: 0
+                                }).format(value);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    });
+    </script>
+    <?php endif; ?>
 
     <?php $conn->close(); ?>
 </body>

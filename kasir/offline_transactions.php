@@ -1,9 +1,12 @@
 <?php
+
+use Fpdf\Fpdf;
+
 session_start();
 include '../config/db_connect.php';
 
-// Sertakan library FPDF
-require '../fpdf/fpdf.php';
+// Sertakan library FPDF dari folder vendor
+require_once('../vendor/autoload.php'); // Use Composer's autoloader
 
 // Fungsi umum
 function formatRupiah($angka) {
@@ -75,11 +78,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_transaction'])
         $kasir_id = $_SESSION['user_id'];
 
         // Simpan transaksi offline
-        $stmt = $conn->prepare("INSERT INTO offline_transactions (transaction_code, kasir_id, total, tanggal) VALUES (?, ?, ?, NOW())");
-        $stmt->bind_param("sdi", $transaction_code, $kasir_id, $subtotal);
+        $stmt = $conn->prepare("INSERT INTO offline_transactions (id_produk, kasir_id, total, transaction_code, jumlah, subtotal, tanggal) VALUES (?, ?, ?, ?, ?, ?, NOW())");
+        $stmt->bind_param("iiisii", $id_produk, $kasir_id, $subtotal, $transaction_code, $jumlah, $subtotal);
         $stmt->execute();
+        $transaction_id = $stmt->insert_id;
         $stmt->close();
-        $transaction_id = 1;
 
         // Simpan detail transaksi
         $stmt = $conn->prepare("INSERT INTO offline_transaction_details (id_transaction, id_produk, jumlah, subtotal) VALUES (?, ?, ?, ?)");
@@ -95,72 +98,90 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_transaction'])
         $stmt->close();
 
         $last_transaction_code = $transaction_code;
-        $message = "Transaksi berhasil dengan kode: $transaction_code";
-        $message_type = 'success';
-
-        // Refresh riwayat transaksi
-        $stmt = $conn->prepare($history_query);
-        $stmt->bind_param("i", $kasir_id);
-        $stmt->execute();
-        $history_result = $stmt->get_result();
-        $stmt->close();
+        
+        // Store success message in session instead of variable
+        $_SESSION['message'] = "Transaksi berhasil dengan kode: $transaction_code";
+        $_SESSION['message_type'] = 'success';
+        $_SESSION['last_transaction_code'] = $transaction_code;
+        
+        // Redirect to the same page to prevent form resubmission
+        header("Location: offline_transactions.php");
+        exit();
     } else {
         $message = implode('<br>', $errors);
         $message_type = 'error';
     }
 }
 
+// Check for session messages
+if (isset($_SESSION['message'])) {
+    $message = $_SESSION['message'];
+    $message_type = $_SESSION['message_type'];
+    $last_transaction_code = isset($_SESSION['last_transaction_code']) ? $_SESSION['last_transaction_code'] : '';
+    
+    // Clear the session messages after retrieving them
+    unset($_SESSION['message']);
+    unset($_SESSION['message_type']);
+    unset($_SESSION['last_transaction_code']);
+}
+
 // Proses unduh struk
 if (isset($_GET['download_receipt'])) {
-    $transaction_code = trim($_GET['download_receipt']);
-    $stmt = $conn->prepare("SELECT ot.*, p.nama AS nama_produk, otd.jumlah, otd.subtotal, u.nama AS nama_kasir
+    $transaction_code = $_GET['download_receipt'];
+    $stmt = $conn->prepare("SELECT ot.*, p.nama AS nama_produk, otd.jumlah, otd.subtotal
                             FROM offline_transactions ot
                             JOIN offline_transaction_details otd ON ot.id = otd.id_transaction
                             JOIN produk p ON otd.id_produk = p.id_produk
-                            JOIN users u ON ot.kasir_id = u.id
-                            WHERE ot.transaction_code = ? AND ot.kasir_id = ?");
-    $stmt->bind_param("si", $transaction_code, $kasir_id);
+                            WHERE ot.transaction_code = ?
+                            ORDER BY ot.tanggal DESC");
+    $stmt->bind_param("s", $transaction_code);
     $stmt->execute();
-    $transaction = $stmt->get_result()->fetch_assoc();
+    $transaction_result = $stmt->get_result();
+    $transaction = $transaction_result->fetch_assoc();
     $stmt->close();
 
     if ($transaction) {
-        // Buat PDF menggunakan FPDF
-        $pdf = new FPDF();
+        $pdf = new Fpdf();
         $pdf->AddPage();
+        
+        // Set margins
+        $pdf->SetMargins(15, 15, 15);
+        
+        // Header
         $pdf->SetFont('Arial', 'B', 16);
-        $pdf->Cell(0, 10, 'MusikKita - Struk Pembelian', 0, 1, 'C');
-        $pdf->Ln(5);
-
+        $pdf->Cell(0, 10, 'Struk Transaksi', 0, 1, 'C');
         $pdf->SetFont('Arial', '', 12);
-        $pdf->Cell(0, 10, 'Kode Transaksi: ' . $transaction['transaction_code'], 0, 1);
-        $pdf->Cell(0, 10, 'Tanggal: ' . date('d M Y H:i', strtotime($transaction['tanggal'])), 0, 1);
-        $pdf->Cell(0, 10, 'Kasir: ' . $transaction['nama_kasir'], 0, 1);
-        $pdf->Ln(5);
-
-        $pdf->SetFont('Arial', 'B', 12);
-        $pdf->Cell(90, 10, 'Produk', 1, 0);
-        $pdf->Cell(30, 10, 'Jumlah', 1, 0);
-        $pdf->Cell(50, 10, 'Subtotal', 1, 1);
-
-        $pdf->SetFont('Arial', '', 12);
-        $pdf->Cell(90, 10, $transaction['nama_produk'], 1, 0);
-        $pdf->Cell(30, 10, $transaction['jumlah'], 1, 0);
-        $pdf->Cell(50, 10, formatRupiah($transaction['subtotal']), 1, 1);
-
-        $pdf->Ln(5);
-        $pdf->SetFont('Arial', 'B', 12);
-        $pdf->Cell(0, 10, 'Total: ' . formatRupiah($transaction['total']), 0, 1);
+        $pdf->Cell(0, 8, 'Kode Transaksi: ' . $transaction['transaction_code'], 0, 1);
+        $pdf->Cell(0, 8, 'Tanggal: ' . $transaction['tanggal'], 0, 1);
+        $pdf->Cell(0, 8, 'Kasir: ' . $_SESSION['nama'], 0, 1);
+        
+        // Table header
         $pdf->Ln(10);
-        $pdf->SetFont('Arial', '', 10);
-        $pdf->Cell(0, 10, 'Terima kasih telah berbelanja di MusikKita!', 0, 1, 'C');
-
-        // Output PDF
-        $pdf->Output('D', 'struk_' . $transaction['transaction_code'] . '.pdf');
-        exit();
-    } else {
-        header("Location: offline_transactions.php?error=Transaksi tidak ditemukan");
-        exit();
+        $pdf->SetFont('Arial', 'B', 12);
+        
+        // Define column widths
+        $width_produk = 100;
+        $width_jumlah = 30;
+        $width_subtotal = 50;
+        
+        // Table headers
+        $pdf->Cell($width_produk, 10, 'Produk', 1, 0, 'C');
+        $pdf->Cell($width_jumlah, 10, 'Jumlah', 1, 0, 'C');
+        $pdf->Cell($width_subtotal, 10, 'Subtotal', 1, 1, 'C');
+        
+        // Table data
+        $pdf->SetFont('Arial', '', 12);
+        $pdf->Cell($width_produk, 10, $transaction['nama_produk'], 1, 0);
+        $pdf->Cell($width_jumlah, 10, $transaction['jumlah'], 1, 0, 'C');
+        $pdf->Cell($width_subtotal, 10, formatRupiah($transaction['subtotal']), 1, 1, 'R');
+        
+        // Total
+        $pdf->Ln(10);
+        $pdf->SetFont('Arial', 'B', 12);
+        $pdf->Cell($width_produk + $width_jumlah, 10, 'Total:', 0, 0, 'R');
+        $pdf->Cell($width_subtotal, 10, formatRupiah($transaction['total']), 0, 1, 'R');
+        
+        $pdf->Output('I', 'struk_transaksi.pdf', true);
     }
 }
 ?>
